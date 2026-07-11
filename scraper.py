@@ -1,63 +1,179 @@
+import requests
+import re
+import json
+import pandas as pd
+import os
 import sys
-# Force immediate output
-sys.stdout.reconfigure(line_buffering=True)
-
-print("DEBUG: Loading libraries...")
-import requests, re, json, pandas as pd, os, time, subprocess
+import time
+import subprocess
 from datetime import datetime
-print("DEBUG: Libraries loaded.")
 
 def git_push_backup(filename):
     try:
-        if not os.path.exists(filename): return
+        # Check if file actually has modifications before running git status
+        status = subprocess.run(["git", "status", "--porcelain", filename], capture_output=True, text=True)
+        if not status.stdout.strip():
+            print("💤 CSV file me koi naya data nahi juda, isliye GitHub backup skip kiya.")
+            return
+
+        print("💾 New data found! Auto-saving to GitHub...")
+        subprocess.run(["git", "--help"], capture_output=True) # Dummy to ensure path works
         subprocess.run(["git", "config", "--global", "user.name", "GitHub Action Bot"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
         subprocess.run(["git", "add", filename], check=True)
-        subprocess.run('git commit -m "Auto-update DB" || exit 0', shell=True, check=True)
+        subprocess.run('git commit -m "Live Chat Token Backup: ' + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + '" || exit 0', shell=True, check=True)
         subprocess.run(["git", "push"], check=True)
-        print("💾 Pushed to GitHub.")
-    except Exception as e: print(f"Git Error: {e}")
+        print("✨ GitHub Backup Done Successfully!")
+    except Exception as e:
+        print(f"⚠️ Git Push Warning: {e}")
 
 def main():
-    if len(sys.argv) < 3: return
-    video_id = re.search(r'(?:v=|\/live\/)([a-zA-Z0-9_-]{11})', sys.argv[1]).group(1)
-    filename = f"chat_db_{video_id}.csv"
+    if len(sys.argv) < 3:
+        print("❌ Error: URL aur Start Time zaroori hain.")
+        return
+        
+    raw_url = sys.argv[1].strip()
+    start_time_input = sys.argv[2].strip().lower()
     
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    print("DEBUG: Fetching Initial Token...")
+    video_id_match = re.search(r'(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})', raw_url)
+    if not video_id_match:
+        print("❌ Error: Invalid YouTube Link.")
+        return
+    video_id = video_id_match.group(1)
     
-    html = requests.get(f"https://www.youtube.com/live_chat?v={video_id}&hl=en&gl=US", headers=headers).text
-    api_key = re.search(r'"INNERTUBE_API_KEY":"(.+?)"', html).group(1)
-    continuation_token = re.search(r'"continuation":"(.+?)"', html).group(1)
-    
-    print("DEBUG: Loop Starting...")
-    while True:
+    # ⏰ SMART WAIT LOGIC
+    if start_time_input != 'now':
+        clean_time = start_time_input.replace(" ", "")
+        is_pm = False
+        if 'pm' in clean_time:
+            is_pm = True
+            clean_time = clean_time.replace('pm', '')
+        elif 'am' in clean_time:
+            clean_time = clean_time.replace('am', '')
+            
         try:
-            api_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}"
-            payload = {"context": {"client": {"clientName": "WEB", "clientVersion": "2.20260701.00.00"}}, 
-                       "continuation": continuation_token, "params": "KgUIqgEYAA%3D%3D"}
-            
-            res = requests.post(api_url, json=payload, headers=headers).json()
-            actions = res.get("continuationContents", {}).get("liveChatContinuation", {}).get("actions", [])
-            
-            new_msgs = []
-            for a in actions:
-                r = a.get("addChatItemAction", {}).get("item", {}).get("liveChatTextMessageRenderer", {})
-                if r:
-                    msg = "".join([i.get("text", "") for i in r.get("message", {}).get("runs", [])])
-                    new_msgs.append({"User": r.get("authorName", {}).get("simpleText", ""), "Msg": msg})
-            
-            if new_msgs:
-                df = pd.DataFrame(new_msgs)
-                df["Time"] = datetime.now().strftime("%H:%M:%S")
-                df.to_csv(filename, mode='a', header=not os.path.exists(filename), index=False)
-                print(f"📥 Saved {len(new_msgs)} msgs.")
-                git_push_backup(filename)
-                
-            continuation_token = res["continuationContents"]["liveChatContinuation"]["continuations"][0].get("timedContinuationData", {}).get("continuation")
-            time.sleep(10)
-        except Exception as e:
-            print(f"Loop Error: {e}")
-            time.sleep(15)
+            parts = clean_time.split(':')
+            h = int(parts[0])
+            m = int(parts[1])
+            if is_pm and h < 12: h += 12
+            if not is_pm and h == 12: h = 0
+            target_time_str = f"{h:02d}:{m:02d}"
+            print(f"🎯 Target Time Set to 24-Hour: {target_time_str} (IST)")
+        except:
+            print("⚠️ Time format samajh nahi aaya, direct match use kar rahe hain.")
+            target_time_str = start_time_input
 
-if __name__ == "__main__": main()
+        while True:
+            current_time_str = datetime.now().strftime("%H:%M")
+            if current_time_str >= target_time_str:
+                print("🚀 Target time ho gaya! Chat capture shuru kiya ja raha hai...")
+                break
+            print(f"💤 Waiting... Current India Time: {current_time_str} | Target: {target_time_str}")
+            time.sleep(15)
+            
+    filename = f"chat_db_{video_id}.csv"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Content-Type": "application/json"
+    }
+    
+    # --- INITIAL PAGE SE TOKENS NIKALNA ---
+    init_url = f"https://www.youtube.com/live_chat?v={video_id}&hl=en&gl=US"
+    try:
+        res = requests.get(init_url, headers={"User-Agent": headers["User-Agent"]})
+        html = res.text
+        
+        api_key_match = re.search(r'"INNERTUBE_API_KEY":"(.+?)"', html)
+        token_match = re.search(r'"continuation":"(.+?)"', html)
+        
+        if not api_key_match or not token_match:
+            print("❌ YouTube Live Chat initialize nahi ho saki. Chat band ho sakti hai.")
+            return
+            
+        api_key = api_key_match.group(1)
+        continuation_token = token_match.group(1)
+        print("✅ Connection established with YouTube Servers!")
+        
+    except Exception as e:
+        print(f"💥 Initialization Error: {e}")
+        return
+
+    last_push_time = time.time()
+    
+    # --- CONTINUOUS TOKEN LOOP ---
+    print("🔄 Live Streaming Token Loop Active... Monitoring YouTube Chat Room.")
+    while continuation_token:
+        try:
+            print(f"📡 [{datetime.now().strftime('%H:%M:%S')}] Fetching next batch from YouTube...")
+            api_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}"
+            payload = {
+                "context": {
+                    "client": {
+                        "clientName": "WEB",
+                        "clientVersion": "2.20260701.00.00"
+                    }
+                },
+                "continuation": continuation_token
+            }
+            
+            response = requests.post(api_url, json=payload, headers=headers)
+            data = response.json()
+            
+            try:
+                continuation_elements = data["continuationContents"]["liveChatContinuation"]["continuations"]
+                continuation_token = continuation_elements[0].get("timedContinuationData", {}).get("continuation") or \
+                                     continuation_elements[0].get("invalidationContinuationData", {}).get("continuation")
+            except KeyError:
+                print("🛑 No more continuation tokens available.")
+                break
+                
+            actions = data.get("continuationContents", {}).get("liveChatContinuation", {}).get("actions", [])
+            chats = []
+            for action in actions:
+                item = action.get("addChatItemAction", {}).get("item", {})
+                msg_renderer = item.get("liveChatTextMessageRenderer", {})
+                if msg_renderer:
+                    author = msg_renderer.get("authorName", {}).get("simpleText", "Unknown")
+                    message_runs = msg_renderer.get("message", {}).get("runs", [])
+                    message = "".join([run.get("text", "") for run in message_runs])
+                    chats.append({"Username": author, "Message": message})
+            
+            if chats:
+                existing_df = pd.DataFrame(columns=["Username", "Message", "Timestamp"])
+                old_count = 0
+                if os.path.exists(filename):
+                    try: 
+                        existing_df = pd.read_csv(filename)
+                        old_count = len(existing_df)
+                    except: pass
+                    
+                new_df = pd.DataFrame(chats)
+                new_df["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=["Username", "Message"], keep="first")
+                final_df.to_csv(filename, index=False)
+                
+                new_count = len(final_df)
+                if new_count > old_count:
+                    print(f"📥 Naye unique messages mile! DB updated: {old_count} -> {new_count} messages.")
+                else:
+                    print("ℹ️ Is batch me koi naya message nahi tha (Sab purane duplicates hain).")
+            else:
+                print("ℹ️ YouTube se is 5 second me koi chat text nahi mila.")
+            
+            if time.time() - last_push_time > 180:
+                git_push_backup(filename)
+                last_push_time = time.time()
+                
+        except Exception as e:
+            print(f"⚠️ Loop Error: {e}")
+            time.sleep(5)
+            
+        sys.stdout.flush() # Force log to show instantly on GitHub screen
+        time.sleep(5)
+        
+    git_push_backup(filename)
+    print("🏁 Scraping process completed.")
+
+if __name__ == "__main__":
+    main()
