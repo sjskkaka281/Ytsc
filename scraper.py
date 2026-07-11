@@ -17,11 +17,18 @@ def git_push_backup(filename):
             return
 
         print("💾 New data found! Auto-saving to GitHub...")
-        subprocess.run(["git", "--help"], capture_output=True) # Dummy to ensure path works
+        # Setup git configs safely
         subprocess.run(["git", "config", "--global", "user.name", "GitHub Action Bot"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
+        
+        # Stage the file
         subprocess.run(["git", "add", filename], check=True)
-        subprocess.run('git commit -m "Live Chat Token Backup: ' + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + '" || exit 0', shell=True, check=True)
+        
+        # Safe Commit (Cross-platform safe, without shell=True issues)
+        commit_msg = f"Live Chat Token Backup: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        subprocess.run(["git", "commit", "-m", commit_msg], check=False)
+        
+        # Push to repository
         subprocess.run(["git", "push"], check=True)
         print("✨ GitHub Backup Done Successfully!")
     except Exception as e:
@@ -131,12 +138,26 @@ def main():
             chats = []
             for action in actions:
                 item = action.get("addChatItemAction", {}).get("item", {})
+                if not item:
+                    continue
+                
+                # 1. Normal Text Messages
                 msg_renderer = item.get("liveChatTextMessageRenderer", {})
+                # 2. Paid Messages (Super Chats)
+                paid_renderer = item.get("liveChatPaidMessageRenderer", {})
+                
                 if msg_renderer:
                     author = msg_renderer.get("authorName", {}).get("simpleText", "Unknown")
                     message_runs = msg_renderer.get("message", {}).get("runs", [])
                     message = "".join([run.get("text", "") for run in message_runs])
                     chats.append({"Username": author, "Message": message})
+                    
+                elif paid_renderer:
+                    author = paid_renderer.get("authorName", {}).get("simpleText", "Unknown")
+                    message_runs = paid_renderer.get("message", {}).get("runs", [])
+                    message = "".join([run.get("text", "") for run in message_runs])
+                    amount = paid_renderer.get("purchaseAmountText", {}).get("simpleText", "💰")
+                    chats.append({"Username": author, "Message": f"[{amount} SuperChat] {message}"})
             
             if chats:
                 existing_df = pd.DataFrame(columns=["Username", "Message", "Timestamp"])
@@ -169,7 +190,7 @@ def main():
             print(f"⚠️ Loop Error: {e}")
             time.sleep(5)
             
-        sys.stdout.flush() # Force log to show instantly on GitHub screen
+        sys.stdout.flush() # Force log to show instantly on GitHub Actions screen
         time.sleep(5)
         
     git_push_backup(filename)
