@@ -6,10 +6,12 @@ import os
 import sys
 import time
 import subprocess
+import pytchat
 from datetime import datetime
 
 def git_push_backup(filename):
     try:
+        # Check if file actually has modifications before running git status
         status = subprocess.run(["git", "status", "--porcelain", filename], capture_output=True, text=True)
         if not status.stdout.strip():
             print("💤 CSV file me koi naya data nahi juda, isliye GitHub backup skip kiya.")
@@ -72,104 +74,36 @@ def main():
             time.sleep(15)
             
     filename = f"chat_db_{video_id}.csv"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Content-Type": "application/json"
-    }
     
-    # --- INITIAL PAGE SE TOKENS NIKALNA ---
-    init_url = f"https://www.youtube.com/live_chat?v={video_id}&hl=en&gl=US"
+    # --- PYTCHAT AUTOMATIC BATCH ENGINE ---
+    print(f"🔄 Connecting to Live Stream [{video_id}] via Pytchat Engine...")
     try:
-        res = requests.get(init_url, headers={"User-Agent": headers["User-Agent"]})
-        html = res.text
-        
-        api_key_match = re.search(r'"INNERTUBE_API_KEY":"(.+?)"', html)
-        
-        # 🔥 FIX: Target accurate Live Chat token structure instead of generic regex
-        token_match = re.search(r'"(?:timedContinuationData|invalidationContinuationData)":{"continuation":"(.+?)"', html)
-        if not token_match:
-            token_match = re.search(r'"continuation":"(.+?)"', html) # Fallback
-            
-        # ⚡ DYNAMIC CLIENT VERSION: YouTube ke badalte versions se bachne ke liye
-        client_version_match = re.search(r'"clientVersion":"([^"]+)"', html)
-        client_version = client_version_match.group(1) if client_version_match else "2.20260701.00.00"
-        
-        if not api_key_match or not token_match:
-            print("❌ YouTube Live Chat initialize nahi ho saki. Token nahi mila.")
+        chat = pytchat.create(video_id=video_id)
+        if chat.is_alive():
+            print("✅ Connection established! Tokens and batches managed automatically.")
+        else:
+            print("❌ Initial connection failed. Stream may be offline or chat disabled.")
             return
-            
-        api_key = api_key_match.group(1)
-        continuation_token = token_match.group(1)
-        print(f"✅ Connection established! Using Client Version: {client_version}")
-        
     except Exception as e:
         print(f"💥 Initialization Error: {e}")
         return
 
     last_push_time = time.time()
+    print("🔄 Live Streaming Active... Monitoring & Saving Chat Room.")
     
-    print("🔄 Live Streaming Token Loop Active... Monitoring YouTube Chat Room.")
-    while continuation_token:
+    while chat.is_alive():
         try:
-            print(f"📡 [{datetime.now().strftime('%H:%M:%S')}] Fetching next batch from YouTube...")
-            api_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}"
-            payload = {
-                "context": {
-                    "client": {
-                        "clientName": "WEB",
-                        "clientVersion": client_version
-                    }
-                },
-                "continuation": continuation_token
-            }
-            
-            response = requests.post(api_url, json=payload, headers=headers)
-            data = response.json()
-            
-            # Extract next token
-            try:
-                continuation_elements = data["continuationContents"]["liveChatContinuation"]["continuations"]
-                continuation_token = continuation_elements[0].get("timedContinuationData", {}).get("continuation") or \
-                                     continuation_elements[0].get("invalidationContinuationData", {}).get("continuation")
-            except KeyError:
-                print("🛑 No more continuation tokens available or stream ended.")
-                break
-                
-            actions = data.get("continuationContents", {}).get("liveChatContinuation", {}).get("actions", [])
+            # Pytchat automatic extraction block (No manual token fetching needed)
+            chat_data = chat.get()
             chats = []
             
-            for action in actions:
-                item = action.get("addChatItemAction", {}).get("item", {})
-                if not item:
-                    continue
-                
-                msg_renderer = item.get("liveChatTextMessageRenderer", {})
-                paid_renderer = item.get("liveChatPaidMessageRenderer", {})
-                
-                # Extract text or emoji safely
-                def parse_message_runs(runs):
-                    parts = []
-                    for run in runs:
-                        if "text" in run:
-                            parts.append(run["text"])
-                        elif "emoji" in run:
-                            # Capture emoji shortcut text (like :thumbsup:)
-                            parts.append(run["emoji"].get("shortcuts", [""])[0])
-                    return "".join(parts)
-
-                if msg_renderer:
-                    author = msg_renderer.get("authorName", {}).get("simpleText", "Unknown")
-                    message = parse_message_runs(msg_renderer.get("message", {}).get("runs", []))
-                    if author and message:
-                        chats.append({"Username": author, "Message": message})
-                    
-                elif paid_renderer:
-                    author = paid_renderer.get("authorName", {}).get("simpleText", "Unknown")
-                    message = parse_message_runs(paid_renderer.get("message", {}).get("runs", []))
-                    amount = paid_renderer.get("purchaseAmountText", {}).get("simpleText", "💰")
-                    chats.append({"Username": author, "Message": f"[{amount} SuperChat] {message}"})
+            for c in chat_data.sync_items():
+                # Emojis, Normal text aur Superchats sab auto-parse ho jate hain isme
+                chats.append({
+                    "Username": c.author.name,
+                    "Message": c.message
+                })
             
-            # --- DATABASE SAVING LOGIC ---
             if chats:
                 existing_df = pd.DataFrame(columns=["Username", "Message", "Timestamp"])
                 old_count = 0
@@ -182,18 +116,19 @@ def main():
                 new_df = pd.DataFrame(chats)
                 new_df["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
+                # Merge and clean duplicates
                 final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=["Username", "Message"], keep="first")
                 final_df.to_csv(filename, index=False)
                 
                 new_count = len(final_df)
                 if new_count > old_count:
-                    print(f"📥 SUCCESS: {new_count - old_count} naye messages DB me save ho gaye! Total: {new_count}")
+                    print(f"📥 SUCCESS: {new_count - old_count} naye unique messages mile! DB Total: {new_count}")
                 else:
-                    print("ℹ️ Is batch me sirf purane duplicate messages the.")
+                    print("ℹ️ Is batch me sirf purane duplicate messages milay.")
             else:
-                print("ℹ️ YouTube se is 5 second me koi chat text nahi mila (Waiting for new messages...)")
+                print(f"📡 [{datetime.now().strftime('%H:%M:%S')}] Monitoring stream... Waiting for new texts.")
             
-            # Auto backup to Git every 3 minutes
+            # Auto-backup to GitHub every 3 minutes
             if time.time() - last_push_time > 180:
                 git_push_backup(filename)
                 last_push_time = time.time()
@@ -203,10 +138,10 @@ def main():
             time.sleep(5)
             
         sys.stdout.flush()
-        time.sleep(5)
+        time.sleep(4) # Controls execution request pacing safely
         
     git_push_backup(filename)
-    print("🏁 Scraping process completed.")
+    print("🏁 Stream ended. Scraping process completed.")
 
 if __name__ == "__main__":
     main()
