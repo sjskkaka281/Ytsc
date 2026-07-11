@@ -4,132 +4,87 @@ import json
 import pandas as pd
 import os
 import sys
-import time
-import subprocess
-from chat_downloader import ChatDownloader
 from datetime import datetime
 
-def git_push_backup(filename):
-    try:
-        status = subprocess.run(["git", "status", "--porcelain", filename], capture_output=True, text=True)
-        if not status.stdout.strip():
-            print("💤 CSV file me koi naya data nahi juda, isliye GitHub backup skip kiya.")
-            return
+def get_video_id():
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        return sys.argv[1].strip()
+    if os.path.exists("url.txt"):
+        with open("url.txt", "r") as f:
+            return f.read().strip()
+    return None
 
-        print("💾 New data found! Auto-saving to GitHub...")
-        subprocess.run(["git", "config", "--global", "user.name", "GitHub Action Bot"], check=True)
-        subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
-        subprocess.run(["git", "add", filename], check=True)
-        
-        commit_msg = f"Live Chat Token Backup: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        subprocess.run(["git", "commit", "-m", commit_msg], check=False)
-        subprocess.run(["git", "push"], check=True)
-        print("✨ GitHub Backup Done Successfully!")
-    except Exception as e:
-        print(f"⚠️ Git Push Warning: {e}")
-
-def main():
-    if len(sys.argv) < 3:
-        print("❌ Error: URL aur Start Time zaroori hain.")
+def scrape_youtube_chat():
+    raw_url = get_video_id()
+    if not raw_url:
+        print("❌ Error: Koi YouTube Link nahi mila.")
         return
         
-    raw_url = sys.argv[1].strip()
-    start_time_input = sys.argv[2].strip().lower()
-    
     video_id_match = re.search(r'(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})', raw_url)
     if not video_id_match:
-        print("❌ Error: Invalid YouTube Link.")
+        print("❌ Error: Video ID nahi nikal paye.")
         return
+        
     video_id = video_id_match.group(1)
     
-    # ⏰ SMART WAIT LOGIC
-    if start_time_input != 'now':
-        clean_time = start_time_input.replace(" ", "")
-        is_pm = False
-        if 'pm' in clean_time:
-            is_pm = True
-            clean_time = clean_time.replace('pm', '')
-        elif 'am' in clean_time:
-            clean_time = clean_time.replace('am', '')
-            
-        try:
-            parts = clean_time.split(':')
-            h = int(parts[0])
-            m = int(parts[1])
-            if is_pm and h < 12: h += 12
-            if not is_pm and h == 12: h = 0
-            target_time_str = f"{h:02d}:{m:02d}"
-            print(f"🎯 Target Time Set to 24-Hour: {target_time_str} (IST)")
-        except:
-            print("⚠️ Time format samajh nahi aaya, direct match use kar rahe hain.")
-            target_time_str = start_time_input
-
-        while True:
-            current_time_str = datetime.now().strftime("%H:%M")
-            if current_time_str >= target_time_str:
-                print("🚀 Target time ho gaya! Chat capture shuru kiya ja raha hai...")
-                break
-            print(f"💤 Waiting... Current India Time: {current_time_str} | Target: {target_time_str}")
-            time.sleep(15)
-            
-    filename = f"chat_db_{video_id}.csv"
-    
-    # --- CHAT DOWNLOADER ENGINE ---
-    print(f"🔄 Connecting to Live Stream [{video_id}] via Chat-Downloader Engine...")
-    try:
-        downloader = ChatDownloader()
-        chat = downloader.get_chat(raw_url)
-        print("✅ Connection established! Automatic batch token tracking active.")
-    except Exception as e:
-        print(f"💥 Initialization Error: {e}")
-        return
-
-    last_push_time = time.time()
-    print("🔄 Live Streaming Active... Capturing Messages in Real-Time.")
+    chat_url = f"https://www.youtube.com/live_chat?v={video_id}&hl=en&gl=US"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
     
     try:
-        # Yeh loop automatically har naya batch fetch karta rahega bina ruke
-        for message in chat:
-            author = message.get('author', {}).get('name', 'Unknown')
-            msg_text = message.get('message', '')
-            
-            # SuperChat Check
-            if 'money' in message:
-                amount = message['money'].get('text', '💰')
-                msg_text = f"[{amount} SuperChat] {msg_text}"
-            
-            # Read and append to database instantly
-            existing_df = pd.DataFrame(columns=["Username", "Message", "Timestamp"])
-            if os.path.exists(filename):
-                try: 
-                    existing_df = pd.read_csv(filename)
-                except: 
-                    pass
-            
-            new_df = pd.DataFrame([{
-                "Username": author,
-                "Message": msg_text,
-                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }])
-            
-            final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=["Username", "Message"], keep="first")
-            final_df.to_csv(filename, index=False)
-            
-            print(f"📥 Saved: [{author}]: {msg_text[:50]}")
-            
-            # GitHub Auto-Backup Every 3 Minutes
-            if time.time() - last_push_time > 180:
-                git_push_backup(filename)
-                last_push_time = time.time()
-                
-            sys.stdout.flush()
-            
-    except Exception as e:
-        print(f"🛑 Stream Loop Interrupted: {e}")
+        response = requests.get(chat_url, headers=headers)
+        html = response.text
         
-    # Final backup code execution closes
-    git_push_backup(filename)
-    print("🏁 Scraping process completed.")
+        if "consent.youtube" in response.url or "sorry/index" in html:
+            print("❌ YouTube ne block kiya ya Consent Form bhej diya.")
+            return
+            
+        match = re.search(r'window\["ytInitialData"\]\s*=\s*({.+?});', html) or re.search(r'ytInitialData\s*=\s*({.+?});', html)
+        if not match:
+            print("❌ Live chat data HTML me nahi mila.")
+            return
+            
+        data = json.loads(match.group(1))
+        
+        actions = []
+        try:
+            if "liveChatRenderer" in data["contents"]:
+                actions = data["contents"]["liveChatRenderer"].get("actions", [])
+            elif "continuationContents" in data:
+                actions = data["continuationContents"]["liveChatContinuation"].get("actions", [])
+        except KeyError:
+            pass
+            
+        chats = []
+        for action in actions:
+            item = action.get("addChatItemAction", {}).get("item", {})
+            msg_renderer = item.get("liveChatTextMessageRenderer", {})
+            if msg_renderer:
+                author = msg_renderer.get("authorName", {}).get("simpleText", "Unknown")
+                message_runs = msg_renderer.get("message", {}).get("runs", [])
+                message = "".join([run.get("text", "") for run in message_runs])
+                chats.append({"Username": author, "Message": message})
+        
+        if not chats:
+            print("⚠️ Is samay koi naya message nahi mila.")
+            return
+            
+        # 🔥 YAHAN HAI ASLI JUGAD: File ke naam me Date aur Time jod diya
+        current_time = datetime.now()
+        timestamp_str = current_time.strftime("%Y%m%d_%H%M%S") # Example: 20260711_075500
+        filename = f"chat_db_{video_id}_{timestamp_str}.csv"
+        
+        new_df = pd.DataFrame(chats)
+        new_df["Timestamp"] = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Seedhe nayi file write hogi, purani database file as it is rahegi
+        new_df.to_csv(filename, index=False)
+        print(f"✅ Brand New File Saved: {filename} (Total chats: {len(chats)})")
+        
+    except Exception as e:
+        print(f"💥 Error: {e}")
 
 if __name__ == "__main__":
-    main()
+    scrape_youtube_chat()
