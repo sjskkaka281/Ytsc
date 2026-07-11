@@ -1,7 +1,6 @@
 name: Pure GitHub Auto Scraper & Storage
 
 on:
-  # 1. Manual run karne ke liye input box khulega
   workflow_dispatch:
     inputs:
       video_url:
@@ -9,9 +8,8 @@ on:
         required: false
         default: ''
         
-  # 2. Automatic Daily Timer (Subah 5:00 AM IST)
   schedule:
-    - cron: '30 23 * * *' # 23:30 UTC yani exact 5:00 AM India Time (IST) next day
+    - cron: '30 23 * * *' # Subah 5:00 AM India Time (IST)
 
 permissions:
   contents: write
@@ -32,13 +30,13 @@ jobs:
         run: pip install requests pandas
 
       - name: Run Scraper Script
-        # Input Box waala URL python script ko bhej raha hai
         run: python scraper.py "${{ github.event.inputs.video_url }}"
 
       - name: Save CSV back to GitHub Repository
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "actions@github.com"
-          git add *.csv
+          # git add . karne se agar koi nayi file bani hogi toh hi add hogi, crash nahi karega
+          git add .
           git commit -m "Automated Chat Backup: $(date)" || exit 0
           git push
