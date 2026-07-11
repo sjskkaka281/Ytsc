@@ -6,12 +6,11 @@ import os
 import sys
 import time
 import subprocess
-import pytchat
+from chat_downloader import ChatDownloader
 from datetime import datetime
 
 def git_push_backup(filename):
     try:
-        # Check if file actually has modifications before running git status
         status = subprocess.run(["git", "status", "--porcelain", filename], capture_output=True, text=True)
         if not status.stdout.strip():
             print("💤 CSV file me koi naya data nahi juda, isliye GitHub backup skip kiya.")
@@ -75,73 +74,62 @@ def main():
             
     filename = f"chat_db_{video_id}.csv"
     
-    # --- PYTCHAT AUTOMATIC BATCH ENGINE ---
-    print(f"🔄 Connecting to Live Stream [{video_id}] via Pytchat Engine...")
+    # --- CHAT DOWNLOADER ENGINE ---
+    print(f"🔄 Connecting to Live Stream [{video_id}] via Chat-Downloader Engine...")
     try:
-        chat = pytchat.create(video_id=video_id)
-        if chat.is_alive():
-            print("✅ Connection established! Tokens and batches managed automatically.")
-        else:
-            print("❌ Initial connection failed. Stream may be offline or chat disabled.")
-            return
+        downloader = ChatDownloader()
+        chat = downloader.get_chat(raw_url)
+        print("✅ Connection established! Automatic batch token tracking active.")
     except Exception as e:
         print(f"💥 Initialization Error: {e}")
         return
 
     last_push_time = time.time()
-    print("🔄 Live Streaming Active... Monitoring & Saving Chat Room.")
+    print("🔄 Live Streaming Active... Capturing Messages in Real-Time.")
     
-    while chat.is_alive():
-        try:
-            # Pytchat automatic extraction block (No manual token fetching needed)
-            chat_data = chat.get()
-            chats = []
+    try:
+        # Yeh loop automatically har naya batch fetch karta rahega bina ruke
+        for message in chat:
+            author = message.get('author', {}).get('name', 'Unknown')
+            msg_text = message.get('message', '')
             
-            for c in chat_data.sync_items():
-                # Emojis, Normal text aur Superchats sab auto-parse ho jate hain isme
-                chats.append({
-                    "Username": c.author.name,
-                    "Message": c.message
-                })
+            # SuperChat Check
+            if 'money' in message:
+                amount = message['money'].get('text', '💰')
+                msg_text = f"[{amount} SuperChat] {msg_text}"
             
-            if chats:
-                existing_df = pd.DataFrame(columns=["Username", "Message", "Timestamp"])
-                old_count = 0
-                if os.path.exists(filename):
-                    try: 
-                        existing_df = pd.read_csv(filename)
-                        old_count = len(existing_df)
-                    except: pass
-                    
-                new_df = pd.DataFrame(chats)
-                new_df["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                
-                # Merge and clean duplicates
-                final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=["Username", "Message"], keep="first")
-                final_df.to_csv(filename, index=False)
-                
-                new_count = len(final_df)
-                if new_count > old_count:
-                    print(f"📥 SUCCESS: {new_count - old_count} naye unique messages mile! DB Total: {new_count}")
-                else:
-                    print("ℹ️ Is batch me sirf purane duplicate messages milay.")
-            else:
-                print(f"📡 [{datetime.now().strftime('%H:%M:%S')}] Monitoring stream... Waiting for new texts.")
+            # Read and append to database instantly
+            existing_df = pd.DataFrame(columns=["Username", "Message", "Timestamp"])
+            if os.path.exists(filename):
+                try: 
+                    existing_df = pd.read_csv(filename)
+                except: 
+                    pass
             
-            # Auto-backup to GitHub every 3 minutes
+            new_df = pd.DataFrame([{
+                "Username": author,
+                "Message": msg_text,
+                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }])
+            
+            final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=["Username", "Message"], keep="first")
+            final_df.to_csv(filename, index=False)
+            
+            print(f"📥 Saved: [{author}]: {msg_text[:50]}")
+            
+            # GitHub Auto-Backup Every 3 Minutes
             if time.time() - last_push_time > 180:
                 git_push_backup(filename)
                 last_push_time = time.time()
                 
-        except Exception as e:
-            print(f"⚠️ Loop Error: {e}")
-            time.sleep(5)
+            sys.stdout.flush()
             
-        sys.stdout.flush()
-        time.sleep(4) # Controls execution request pacing safely
+    except Exception as e:
+        print(f"🛑 Stream Loop Interrupted: {e}")
         
+    # Final backup code execution closes
     git_push_backup(filename)
-    print("🏁 Stream ended. Scraping process completed.")
+    print("🏁 Scraping process completed.")
 
 if __name__ == "__main__":
     main()
