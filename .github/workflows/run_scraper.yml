@@ -31,7 +31,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install Libraries
-        run: pip install requests pandas pytchat
+        run: pip install requests pandas chat-downloader
 
       - name: Run Scraper Script In Live Loop
         run: python scraper.py "${{ github.event.inputs.video_url }}" "${{ github.event.inputs.start_time }}"
