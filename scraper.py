@@ -22,12 +22,16 @@ def scrape_youtube_chat():
         
     video_id_match = re.search(r'(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})', raw_url)
     if not video_id_match:
-        print("❌ Error: Video ID nahi nikal paye.")
+        print("❌ Error: Video ID nahi nikal paye link se.")
         return
         
     video_id = video_id_match.group(1)
+    print(f"🚀 Target Video ID: {video_id}")
     
+    # 🌟 Region aur Language lagaya taaki YouTube bhatke nahi
     chat_url = f"https://www.youtube.com/live_chat?v={video_id}&hl=en&gl=US"
+    
+    # 🌟 Ekdam asli browser jaisa header
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
@@ -37,17 +41,19 @@ def scrape_youtube_chat():
         response = requests.get(chat_url, headers=headers)
         html = response.text
         
+        # Check agar YouTube ne block kiya ya consent page bhej diya
         if "consent.youtube" in response.url or "sorry/index" in html:
-            print("❌ YouTube ne block kiya ya Consent Form bhej diya.")
+            print("❌ Oh ho! YouTube ne GitHub IP ko block kiya ya Consent Form bhej diya.")
             return
             
         match = re.search(r'window\["ytInitialData"\]\s*=\s*({.+?});', html) or re.search(r'ytInitialData\s*=\s*({.+?});', html)
         if not match:
-            print("❌ Live chat data HTML me nahi mila.")
+            print("❌ Live chat data HTML me nahi mila (Regex Match Failed).")
             return
             
         data = json.loads(match.group(1))
         
+        # Pre-stream aur Live stream dono ke liye alag-alag structures check karenge
         actions = []
         try:
             if "liveChatRenderer" in data["contents"]:
@@ -68,23 +74,24 @@ def scrape_youtube_chat():
                 chats.append({"Username": author, "Message": message})
         
         if not chats:
-            print("⚠️ Is samay koi naya message nahi mila.")
+            print("⚠️ HTML toh mila par chat list khali aayi (Shayad abhi koi message nahi hai).")
             return
             
-        # 🔥 YAHAN HAI ASLI JUGAD: File ke naam me Date aur Time jod diya
-        current_time = datetime.now()
-        timestamp_str = current_time.strftime("%Y%m%d_%H%M%S") # Example: 20260711_075500
-        filename = f"chat_db_{video_id}_{timestamp_str}.csv"
-        
+        filename = f"chat_db_{video_id}.csv"
+        existing_df = pd.DataFrame(columns=["Username", "Message", "Timestamp"])
+        if os.path.exists(filename):
+            try: existing_df = pd.read_csv(filename)
+            except: pass
+                
         new_df = pd.DataFrame(chats)
-        new_df["Timestamp"] = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        new_df["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Seedhe nayi file write hogi, purani database file as it is rahegi
-        new_df.to_csv(filename, index=False)
-        print(f"✅ Brand New File Saved: {filename} (Total chats: {len(chats)})")
+        final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=["Username", "Message"], keep="first")
+        final_df.to_csv(filename, index=False)
+        print(f"✅ Successfully Saved! Total chats extracted: {len(chats)}")
         
     except Exception as e:
-        print(f"💥 Error: {e}")
+        print(f"💥 Code Crash Error: {e}")
 
 if __name__ == "__main__":
     scrape_youtube_chat()
