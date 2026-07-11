@@ -10,25 +10,18 @@ from datetime import datetime
 
 def git_push_backup(filename):
     try:
-        # Check if file actually has modifications before running git status
         status = subprocess.run(["git", "status", "--porcelain", filename], capture_output=True, text=True)
         if not status.stdout.strip():
             print("💤 CSV file me koi naya data nahi juda, isliye GitHub backup skip kiya.")
             return
 
         print("💾 New data found! Auto-saving to GitHub...")
-        # Setup git configs safely
         subprocess.run(["git", "config", "--global", "user.name", "GitHub Action Bot"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
-        
-        # Stage the file
         subprocess.run(["git", "add", filename], check=True)
         
-        # Safe Commit (Cross-platform safe, without shell=True issues)
         commit_msg = f"Live Chat Token Backup: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         subprocess.run(["git", "commit", "-m", commit_msg], check=False)
-        
-        # Push to repository
         subprocess.run(["git", "push"], check=True)
         print("✨ GitHub Backup Done Successfully!")
     except Exception as e:
@@ -91,15 +84,23 @@ def main():
         html = res.text
         
         api_key_match = re.search(r'"INNERTUBE_API_KEY":"(.+?)"', html)
-        token_match = re.search(r'"continuation":"(.+?)"', html)
+        
+        # 🔥 FIX: Target accurate Live Chat token structure instead of generic regex
+        token_match = re.search(r'"(?:timedContinuationData|invalidationContinuationData)":{"continuation":"(.+?)"', html)
+        if not token_match:
+            token_match = re.search(r'"continuation":"(.+?)"', html) # Fallback
+            
+        # ⚡ DYNAMIC CLIENT VERSION: YouTube ke badalte versions se bachne ke liye
+        client_version_match = re.search(r'"clientVersion":"([^"]+)"', html)
+        client_version = client_version_match.group(1) if client_version_match else "2.20260701.00.00"
         
         if not api_key_match or not token_match:
-            print("❌ YouTube Live Chat initialize nahi ho saki. Chat band ho sakti hai.")
+            print("❌ YouTube Live Chat initialize nahi ho saki. Token nahi mila.")
             return
             
         api_key = api_key_match.group(1)
         continuation_token = token_match.group(1)
-        print("✅ Connection established with YouTube Servers!")
+        print(f"✅ Connection established! Using Client Version: {client_version}")
         
     except Exception as e:
         print(f"💥 Initialization Error: {e}")
@@ -107,7 +108,6 @@ def main():
 
     last_push_time = time.time()
     
-    # --- CONTINUOUS TOKEN LOOP ---
     print("🔄 Live Streaming Token Loop Active... Monitoring YouTube Chat Room.")
     while continuation_token:
         try:
@@ -117,7 +117,7 @@ def main():
                 "context": {
                     "client": {
                         "clientName": "WEB",
-                        "clientVersion": "2.20260701.00.00"
+                        "clientVersion": client_version
                     }
                 },
                 "continuation": continuation_token
@@ -126,39 +126,50 @@ def main():
             response = requests.post(api_url, json=payload, headers=headers)
             data = response.json()
             
+            # Extract next token
             try:
                 continuation_elements = data["continuationContents"]["liveChatContinuation"]["continuations"]
                 continuation_token = continuation_elements[0].get("timedContinuationData", {}).get("continuation") or \
                                      continuation_elements[0].get("invalidationContinuationData", {}).get("continuation")
             except KeyError:
-                print("🛑 No more continuation tokens available.")
+                print("🛑 No more continuation tokens available or stream ended.")
                 break
                 
             actions = data.get("continuationContents", {}).get("liveChatContinuation", {}).get("actions", [])
             chats = []
+            
             for action in actions:
                 item = action.get("addChatItemAction", {}).get("item", {})
                 if not item:
                     continue
                 
-                # 1. Normal Text Messages
                 msg_renderer = item.get("liveChatTextMessageRenderer", {})
-                # 2. Paid Messages (Super Chats)
                 paid_renderer = item.get("liveChatPaidMessageRenderer", {})
                 
+                # Extract text or emoji safely
+                def parse_message_runs(runs):
+                    parts = []
+                    for run in runs:
+                        if "text" in run:
+                            parts.append(run["text"])
+                        elif "emoji" in run:
+                            # Capture emoji shortcut text (like :thumbsup:)
+                            parts.append(run["emoji"].get("shortcuts", [""])[0])
+                    return "".join(parts)
+
                 if msg_renderer:
                     author = msg_renderer.get("authorName", {}).get("simpleText", "Unknown")
-                    message_runs = msg_renderer.get("message", {}).get("runs", [])
-                    message = "".join([run.get("text", "") for run in message_runs])
-                    chats.append({"Username": author, "Message": message})
+                    message = parse_message_runs(msg_renderer.get("message", {}).get("runs", []))
+                    if author and message:
+                        chats.append({"Username": author, "Message": message})
                     
                 elif paid_renderer:
                     author = paid_renderer.get("authorName", {}).get("simpleText", "Unknown")
-                    message_runs = paid_renderer.get("message", {}).get("runs", [])
-                    message = "".join([run.get("text", "") for run in message_runs])
+                    message = parse_message_runs(paid_renderer.get("message", {}).get("runs", []))
                     amount = paid_renderer.get("purchaseAmountText", {}).get("simpleText", "💰")
                     chats.append({"Username": author, "Message": f"[{amount} SuperChat] {message}"})
             
+            # --- DATABASE SAVING LOGIC ---
             if chats:
                 existing_df = pd.DataFrame(columns=["Username", "Message", "Timestamp"])
                 old_count = 0
@@ -176,12 +187,13 @@ def main():
                 
                 new_count = len(final_df)
                 if new_count > old_count:
-                    print(f"📥 Naye unique messages mile! DB updated: {old_count} -> {new_count} messages.")
+                    print(f"📥 SUCCESS: {new_count - old_count} naye messages DB me save ho gaye! Total: {new_count}")
                 else:
-                    print("ℹ️ Is batch me koi naya message nahi tha (Sab purane duplicates hain).")
+                    print("ℹ️ Is batch me sirf purane duplicate messages the.")
             else:
-                print("ℹ️ YouTube se is 5 second me koi chat text nahi mila.")
+                print("ℹ️ YouTube se is 5 second me koi chat text nahi mila (Waiting for new messages...)")
             
+            # Auto backup to Git every 3 minutes
             if time.time() - last_push_time > 180:
                 git_push_backup(filename)
                 last_push_time = time.time()
@@ -190,7 +202,7 @@ def main():
             print(f"⚠️ Loop Error: {e}")
             time.sleep(5)
             
-        sys.stdout.flush() # Force log to show instantly on GitHub Actions screen
+        sys.stdout.flush()
         time.sleep(5)
         
     git_push_backup(filename)
