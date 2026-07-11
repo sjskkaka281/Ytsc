@@ -34,16 +34,35 @@ def main():
         return
     video_id = video_id_match.group(1)
     
-    # ⏰ WAIT LOGIC
+    # ⏰ SMART WAIT LOGIC (Fixes the leading zero bug & supports AM/PM text)
     if start_time_input != 'now':
-        print(f"⏰ Target Time Set: {start_time_input} (IST)")
+        clean_time = start_time_input.replace(" ", "")
+        is_pm = False
+        if 'pm' in clean_time:
+            is_pm = True
+            clean_time = clean_time.replace('pm', '')
+        elif 'am' in clean_time:
+            clean_time = clean_time.replace('am', '')
+            
+        try:
+            parts = clean_time.split(':')
+            h = int(parts[0])
+            m = int(parts[1])
+            if is_pm and h < 12: h += 12
+            if not is_pm and h == 12: h = 0
+            target_time_str = f"{h:02d}:{m:02d}" # Hamesha 2 digits me convert karega (e.g., '08:15')
+            print(f"🎯 Target Time Set to 24-Hour: {target_time_str} (IST)")
+        except:
+            print("⚠️ Time format samajh nahi aaya, direct match use kar rahe hain.")
+            target_time_str = start_time_input
+
         while True:
             current_time_str = datetime.now().strftime("%H:%M")
-            if current_time_str >= start_time_input:
-                print("🚀 Time ho gaya! Chat capture shuru...")
+            if current_time_str >= target_time_str:
+                print("🚀 Target time ho gaya! Chat capture shuru kiya ja raha hai...")
                 break
-            print(f"💤 Waiting... Current: {current_time_str} | Target: {start_time_input}")
-            time.sleep(20)
+            print(f"💤 Waiting... Current India Time: {current_time_str} | Target: {target_time_str}")
+            time.sleep(15)
             
     filename = f"chat_db_{video_id}.csv"
     headers = {
@@ -51,15 +70,13 @@ def main():
         "Content-Type": "application/json"
     }
     
-    # --- STEP 1: INITIAL PAGE SE API KEY AUR CONTINUATION TOKEN NIKALNA ---
+    # --- INITIAL PAGE SE TOKENS NIKALNA ---
     init_url = f"https://www.youtube.com/live_chat?v={video_id}&hl=en&gl=US"
     try:
         res = requests.get(init_url, headers={"User-Agent": headers["User-Agent"]})
         html = res.text
         
-        # Extract API Key
         api_key_match = re.search(r'"INNERTUBE_API_KEY":"(.+?)"', html)
-        # Extract Continuation Token
         token_match = re.search(r'"continuation":"(.+?)"', html)
         
         if not api_key_match or not token_match:
@@ -68,7 +85,7 @@ def main():
             
         api_key = api_key_match.group(1)
         continuation_token = token_match.group(1)
-        print("🎯 API Key aur Continuation Token successfully mil gaya!")
+        print("✅ Connection established with YouTube Servers!")
         
     except Exception as e:
         print(f"💥 Initialization Error: {e}")
@@ -76,11 +93,10 @@ def main():
 
     last_push_time = time.time()
     
-    # --- STEP 2: CONTINUOUS API POLLING LOOP (NO MESSAGE LOSS) ---
-    print("🔄 Live Streaming Token Loop Shuru Ho Raha Hai...")
+    # --- CONTINUOUS TOKEN LOOP ---
+    print("🔄 Live Streaming Token Loop Active...")
     while continuation_token:
         try:
-            # YouTube ki inner API ko hit karenge jaise asli browser karta hai
             api_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}"
             payload = {
                 "context": {
@@ -95,17 +111,14 @@ def main():
             response = requests.post(api_url, json=payload, headers=headers)
             data = response.json()
             
-            # Agla token nikalna taaki agla batch mile (is se ek bhi message miss nahi hota)
             try:
                 continuation_elements = data["continuationContents"]["liveChatContinuation"]["continuations"]
-                # Alag alag tarah ke tokens ho sakte hain (timed continuation ya invalidation)
                 continuation_token = continuation_elements[0].get("timedContinuationData", {}).get("continuation") or \
                                      continuation_elements[0].get("invalidationContinuationData", {}).get("continuation")
             except KeyError:
-                print("🛑 No more continuation tokens. Stream shayad officially end ho gayi.")
+                print("🛑 No more continuation tokens. Stream end ho gayi.")
                 break
                 
-            # Messages extract karo
             actions = data.get("continuationContents", {}).get("liveChatContinuation", {}).get("actions", [])
             chats = []
             for action in actions:
@@ -128,9 +141,8 @@ def main():
                 
                 final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=["Username", "Message"], keep="first")
                 final_df.to_csv(filename, index=False)
-                print(f"📥 New batch saved via API. Total unique chats in DB: {len(final_df)}")
+                print(f"📥 Batch processed. Total unique messages in master CSV: {len(final_df)}")
             
-            # Har 3 minute mein GitHub par push
             if time.time() - last_push_time > 180:
                 git_push_backup(filename)
                 last_push_time = time.time()
@@ -139,7 +151,7 @@ def main():
             print(f"⚠️ Loop Error: {e}")
             time.sleep(5)
             
-        time.sleep(5) # API mode me 5-10 second ka gap perfect hai, bina data loose kiye
+        time.sleep(5)
         
     git_push_backup(filename)
     print("🏁 Scraping process completed flawlessly.")
