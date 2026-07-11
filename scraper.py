@@ -10,14 +10,12 @@ from datetime import datetime
 
 def git_push_backup(filename):
     try:
-        # Check if file actually has modifications before running git status
         status = subprocess.run(["git", "status", "--porcelain", filename], capture_output=True, text=True)
         if not status.stdout.strip():
             print("💤 CSV file me koi naya data nahi juda, isliye GitHub backup skip kiya.")
             return
 
         print("💾 New data found! Auto-saving to GitHub...")
-        subprocess.run(["git", "--help"], capture_output=True) # Dummy to ensure path works
         subprocess.run(["git", "config", "--global", "user.name", "GitHub Action Bot"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
         subprocess.run(["git", "add", filename], check=True)
@@ -41,9 +39,10 @@ def main():
         return
     video_id = video_id_match.group(1)
     
-    # ⏰ SMART WAIT LOGIC
+    # ⏰ SMART WAIT LOGIC (Supports AM, PM, A.M., P.M., spaces, and 24-hour formats)
     if start_time_input != 'now':
-        clean_time = start_time_input.replace(" ", "")
+        # 🔥 Sabse pehle spaces aur DOTS (.) mita rahe hain (e.g., 'a.m.' ban jayega 'am')
+        clean_time = start_time_input.replace(" ", "").replace(".", "")
         is_pm = False
         if 'pm' in clean_time:
             is_pm = True
@@ -169,7 +168,7 @@ def main():
             print(f"⚠️ Loop Error: {e}")
             time.sleep(5)
             
-        sys.stdout.flush() # Force log to show instantly on GitHub screen
+        sys.stdout.flush()
         time.sleep(5)
         
     git_push_backup(filename)
