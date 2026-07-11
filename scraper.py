@@ -10,13 +10,20 @@ from datetime import datetime
 
 def git_push_backup(filename):
     try:
-        print("💾 Auto-saving data to GitHub...")
+        # Check if file actually has modifications before running git status
+        status = subprocess.run(["git", "status", "--porcelain", filename], capture_output=True, text=True)
+        if not status.stdout.strip():
+            print("💤 CSV file me koi naya data nahi juda, isliye GitHub backup skip kiya.")
+            return
+
+        print("💾 New data found! Auto-saving to GitHub...")
+        subprocess.run(["git", "--help"], capture_output=True) # Dummy to ensure path works
         subprocess.run(["git", "config", "--global", "user.name", "GitHub Action Bot"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
         subprocess.run(["git", "add", filename], check=True)
         subprocess.run('git commit -m "Live Chat Token Backup: ' + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + '" || exit 0', shell=True, check=True)
         subprocess.run(["git", "push"], check=True)
-        print("✨ GitHub Backup Done!")
+        print("✨ GitHub Backup Done Successfully!")
     except Exception as e:
         print(f"⚠️ Git Push Warning: {e}")
 
@@ -34,7 +41,7 @@ def main():
         return
     video_id = video_id_match.group(1)
     
-    # ⏰ SMART WAIT LOGIC (Fixes the leading zero bug & supports AM/PM text)
+    # ⏰ SMART WAIT LOGIC
     if start_time_input != 'now':
         clean_time = start_time_input.replace(" ", "")
         is_pm = False
@@ -50,7 +57,7 @@ def main():
             m = int(parts[1])
             if is_pm and h < 12: h += 12
             if not is_pm and h == 12: h = 0
-            target_time_str = f"{h:02d}:{m:02d}" # Hamesha 2 digits me convert karega (e.g., '08:15')
+            target_time_str = f"{h:02d}:{m:02d}"
             print(f"🎯 Target Time Set to 24-Hour: {target_time_str} (IST)")
         except:
             print("⚠️ Time format samajh nahi aaya, direct match use kar rahe hain.")
@@ -80,7 +87,7 @@ def main():
         token_match = re.search(r'"continuation":"(.+?)"', html)
         
         if not api_key_match or not token_match:
-            print("❌ YouTube Live Chat initialize nahi ho saki. Shayad chat band hai.")
+            print("❌ YouTube Live Chat initialize nahi ho saki. Chat band ho sakti hai.")
             return
             
         api_key = api_key_match.group(1)
@@ -94,9 +101,10 @@ def main():
     last_push_time = time.time()
     
     # --- CONTINUOUS TOKEN LOOP ---
-    print("🔄 Live Streaming Token Loop Active...")
+    print("🔄 Live Streaming Token Loop Active... Monitoring YouTube Chat Room.")
     while continuation_token:
         try:
+            print(f"📡 [{datetime.now().strftime('%H:%M:%S')}] Fetching next batch from YouTube...")
             api_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}"
             payload = {
                 "context": {
@@ -116,7 +124,7 @@ def main():
                 continuation_token = continuation_elements[0].get("timedContinuationData", {}).get("continuation") or \
                                      continuation_elements[0].get("invalidationContinuationData", {}).get("continuation")
             except KeyError:
-                print("🛑 No more continuation tokens. Stream end ho gayi.")
+                print("🛑 No more continuation tokens available.")
                 break
                 
             actions = data.get("continuationContents", {}).get("liveChatContinuation", {}).get("actions", [])
@@ -132,8 +140,11 @@ def main():
             
             if chats:
                 existing_df = pd.DataFrame(columns=["Username", "Message", "Timestamp"])
+                old_count = 0
                 if os.path.exists(filename):
-                    try: existing_df = pd.read_csv(filename)
+                    try: 
+                        existing_df = pd.read_csv(filename)
+                        old_count = len(existing_df)
                     except: pass
                     
                 new_df = pd.DataFrame(chats)
@@ -141,7 +152,14 @@ def main():
                 
                 final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=["Username", "Message"], keep="first")
                 final_df.to_csv(filename, index=False)
-                print(f"📥 Batch processed. Total unique messages in master CSV: {len(final_df)}")
+                
+                new_count = len(final_df)
+                if new_count > old_count:
+                    print(f"📥 Naye unique messages mile! DB updated: {old_count} -> {new_count} messages.")
+                else:
+                    print("ℹ️ Is batch me koi naya message nahi tha (Sab purane duplicates hain).")
+            else:
+                print("ℹ️ YouTube se is 5 second me koi chat text nahi mila.")
             
             if time.time() - last_push_time > 180:
                 git_push_backup(filename)
@@ -151,10 +169,11 @@ def main():
             print(f"⚠️ Loop Error: {e}")
             time.sleep(5)
             
+        sys.stdout.flush() # Force log to show instantly on GitHub screen
         time.sleep(5)
         
     git_push_backup(filename)
-    print("🏁 Scraping process completed flawlessly.")
+    print("🏁 Scraping process completed.")
 
 if __name__ == "__main__":
     main()
