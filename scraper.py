@@ -10,22 +10,21 @@ from datetime import datetime
 def start_live_scraper():
     raw_url = None
     
-    # 1. Agar manually URL daal kar chalaya hai (Workflow Dispatch)
+    # 1. Manual Input check karenge
     if len(sys.argv) > 1 and sys.argv[1].strip():
         raw_url = sys.argv[1].strip()
         with open("active_stream.txt", "w") as f:
             f.write(raw_url)
         print(f"📥 Manual Input mila. URL ko active_stream.txt me save kar diya hai.")
         
-    # 2. Agar automatic timer se chala hai (Cron Job)
+    # 2. Automatic resume check karenge
     elif os.path.exists("active_stream.txt"):
         with open("active_stream.txt", "r") as f:
             raw_url = f.read().strip()
         print(f"🔄 Automatic Resume: active_stream.txt se URL mila -> {raw_url}")
 
-    # Agar dono me se kuch nahi mila, toh chupchap exit kar jao
     if not raw_url:
-        print("⏳ Abhi koi active stream nahi chal rahi hai jise scrap karna ho. Exiting...")
+        print("⏳ Abhi koi active stream nahi chal rahi hai. Exiting...")
         return
         
     video_id_match = re.search(r'(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})', raw_url)
@@ -37,18 +36,20 @@ def start_live_scraper():
     filename = f"chat_db_{video_id}.csv"
     print(f"🚀 Scraping Started for Video ID: {video_id} | Target File: {filename}")
     
+    # 🔥 Pristine aur Real User-Agent taaki YouTube block na kare
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Joint/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Cache-Control": "max-age=0"
     }
     
     def auto_git_push():
-        """Data aur Status file dono ko GitHub par sync karne ke liye"""
         if os.environ.get("GITHUB_ACTIONS") == "true":
             print("🔄 Syncing files to GitHub Repository...")
             os.system("git config --global user.name 'GitHub Action Bot'")
             os.system("git config --global user.email 'actions@github.com'")
-            os.system("git add .")  # Saari files (CSV + TXT) ka status stage karega
+            os.system("git add .")
             os.system("git commit -m 'Auto-Update: Live chats & status sync' || exit 0")
             os.system("git push")
 
@@ -58,11 +59,16 @@ def start_live_scraper():
         res = requests.get(chat_url, headers=headers)
         html = res.text
         
+        # Check agar YouTube ne kisi consent ya verify page par bhej diya ho
+        if "consent.youtube" in res.url or "sorry/index" in html or "consent.google" in res.url:
+            print("❌ Oh ho! YouTube ne GitHub IP ko block kiya ya Consent Form bhej diya.")
+            return
+
         api_key_match = re.search(r'"innertubeApiKey":"([^"]+)"', html) or re.search(r'"apiKey":"([^"]+)"', html)
         match = re.search(r'window\["ytInitialData"\]\s*=\s*({.+?});', html) or re.search(r'ytInitialData\s*=\s*({.+?});', html)
         
         if not api_key_match or not match:
-            print("❌ Initial tokens nahi mile. Stream offline ho sakti hai.")
+            print("❌ Initial tokens nahi mile. Stream offline ho sakti hai ya HTML structure badal gaya hai.")
             return
             
         api_key = api_key_match.group(1)
@@ -128,16 +134,14 @@ def start_live_scraper():
                 final_df.to_csv(filename, index=False)
                 print(f"📥 Captured +{len(chats)} new messages.")
 
-            # Agla token check karna
             try:
                 next_cont_arr = api_data["continuationContents"]["liveChatContinuation"]["continuations"]
                 continuation = next_cont_arr[0].get("timedContinuationData", {}).get("continuation") or \
                                next_cont_arr[0].get("liveChatReplayContinuationData", {}).get("continuation")
             except (KeyError, IndexError):
-                # Agar stream sach me khatam ho gayi toh loop todega
                 print("🏁 Stream ya Chat end ho gayi hai. Stopping...")
                 if os.path.exists("active_stream.txt"):
-                    os.remove("active_stream.txt") # Txt file delete taaki automatic loop band ho jaye
+                    os.remove("active_stream.txt")
                 auto_git_push()
                 break
                 
@@ -147,7 +151,6 @@ def start_live_scraper():
                 auto_git_push()
                 break
             
-            # Har 1 minute (~12 cycles) me GitHub pe data safe push karega
             push_counter += 1
             if push_counter >= 12: 
                 auto_git_push()
