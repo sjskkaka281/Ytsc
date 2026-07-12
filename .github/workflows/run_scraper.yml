@@ -5,8 +5,16 @@ on:
     inputs:
       video_url:
         description: 'YouTube Live Stream URL Daaliye'
-        required: true
+        required: false
         default: ''
+  schedule:
+    # Har 10 minute me check karega taaki 6 ghante baad turant chalu ho sake
+    - cron: '*/10 * * * *'
+
+# Ek waqt me sirf ek hi scraper chalne dene ke liye constraint
+concurrency:
+  group: youtube-live-scraper
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -26,5 +34,5 @@ jobs:
       - name: Install Libraries
         run: pip install requests pandas
 
-      - name: Run Infinite Scraper Loop
+      - name: Run Scraper Loop
         run: python scraper.py "${{ github.event.inputs.video_url }}"
