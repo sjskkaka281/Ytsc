@@ -42,13 +42,20 @@ def start_live_scraper():
     }
     
     def auto_git_push():
+        """Smart Sync Logic: Diverged branch aur non-fast-forward rejections ko bypass karne ke liye"""
         if os.environ.get("GITHUB_ACTIONS") == "true":
-            print("🔄 Syncing files to GitHub Repository...")
+            print("🔄 Syncing files to GitHub Repository (Smart Fetch & Reset)...")
             os.system("git config --global user.name 'GitHub Action Bot'")
             os.system("git config --global user.email 'actions@github.com'")
+            
+            # 1. Remote se latest changes fetch karo bina merge kiye
+            os.system("git fetch origin main")
+            # 2. Local index ko remote ke sath align karo (worktree ka data safe rahega)
+            os.system("git reset --mixed origin/main")
+            # 3. Ab naye changes ko add karke commit aur push karo (Yeh hamesha fast-forward hoga)
             os.system("git add .")
             os.system("git commit -m 'Auto-Update: Live chats & status sync' || exit 0")
-            os.system("git push")
+            os.system("git push origin main")
 
     def save_to_csv(chats_list):
         if not chats_list:
@@ -65,7 +72,7 @@ def start_live_scraper():
         final_df.to_csv(filename, index=False)
         print(f"📥 Captured +{len(chats_list)} messages. Total in DB: {len(final_df)}")
 
-    # --- STEP 1: INITIAL HTML PARSING (Puraane Dikh Rahe Messages Ke Liye) ---
+    # --- STEP 1: INITIAL HTML PARSING ---
     chat_url = f"https://www.youtube.com/live_chat?v={video_id}&hl=en&gl=US"
     try:
         res = requests.get(chat_url, headers=headers)
@@ -85,7 +92,6 @@ def start_live_scraper():
         api_key = api_key_match.group(1)
         data = json.loads(match.group(1))
         
-        # HTML ke andar maujood shuruati chats ko nikal kar turant save karna
         initial_chats = []
         try:
             initial_actions = []
@@ -109,7 +115,6 @@ def start_live_scraper():
         except Exception as e:
             print(f"⚠️ Initial chat parsing skipped: {e}")
         
-        # Token extraction
         continuation = None
         try:
             continuations = data["contents"]["liveChatRenderer"]["continuations"]
@@ -127,7 +132,7 @@ def start_live_scraper():
         print(f"💥 Connection Error: {e}")
         return
 
-    # --- STEP 2: MULTI-TOKEN LOOP (HAR 5 SECONDS FOR LIVE & PRE-STREAMS) ---
+    # --- STEP 2: MULTI-TOKEN LOOP (HAR 5 SECONDS) ---
     api_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}"
     push_counter = 0
     
@@ -161,7 +166,6 @@ def start_live_scraper():
             if loop_chats:
                 save_to_csv(loop_chats)
 
-            # 🔥 Upgraded Token Fetching: Sabhi type ke tokens check karenge taaki waiting room me loop na atke
             try:
                 next_cont_arr = api_data["continuationContents"]["liveChatContinuation"]["continuations"]
                 continuation = next_cont_arr[0].get("timedContinuationData", {}).get("continuation") or \
